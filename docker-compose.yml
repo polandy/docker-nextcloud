@@ -1,0 +1,96 @@
+version: '2'
+
+networks:
+  proxy:
+    external: true
+  nextcloud-internal:
+    external: false
+services:
+
+  db:
+    image: postgres:10-alpine
+    restart: always
+    volumes:
+      - ${DOCKER_DATA}/nextcloud/postgres-data:/var/lib/postgresql/data
+    env_file:
+      - db.env
+    networks:
+      - nextcloud-internal
+
+  app:
+    image: nextcloud:16
+    restart: always
+    links:
+      - db
+    volumes:
+      - ${DOCKER_DATA}/nextcloud/nextcloud:/var/www/html
+      - ${DOCKER_DATA}/nextcloud/apps:/var/www/html/custom_apps
+      - ${DOCKER_DATA}/nextcloud/config:/var/www/html/config
+      - ${DOCKER_DATA}/nextcloud/data:/var/www/html/data
+      - /mnt/Diskstation/Photos:/mnt/Diskstation/Photos:ro
+      - /mnt/Diskstation/nextcloud-data:/mnt/Diskstation/nextcloud-data:rw
+    environment:
+      - POSTGRES_HOST=db
+      - NEXTCLOUD_TRUSTED_DOMAINS=nc.${DOMAIN}
+    env_file:
+      - db.env
+      - nextcloud.env
+    depends_on:
+      - db
+      - redis
+    networks:
+      - nextcloud-internal
+      - proxy
+    labels:
+      - "traefik.docker.network=proxy"
+      - "traefik.enable=true"
+      - "traefik.backend=nextcloud"
+      - "traefik.frontend.rule=Host:nc.${DOMAIN}"
+      - "traefik.port=80"
+
+  redis:
+    image: redis:5.0.5-alpine
+    restart: always
+    networks:
+      - nextcloud-internal
+    volumes:
+      - ${DOCKER_DATA}/nextcloud/redis:/data
+
+  backup:
+    image: docker-backup:latest
+    build:
+      context: ./sidecar
+    user: root
+    environment:
+      - BACKUP_FREQUENCY=12h
+      # the following env variables must match with the mounted directories in the volumes section
+      # directories to backup
+      - NEXTCLOUD_DIRECTORIES=/to-backup/nextcloud/var/www/html/,/to-backup/nextcloud/var/www/html/custom_apps/,/to-backup/nextcloud/var/www/config/,/to-backup/nextcloud/redis/
+      # backups will be stored in this directory within the container
+      - BACKUP_DIR=/backups
+      # path to the encryption key file within the container
+      - ENCRYPTION_KEY_PATH=/var/encryption.key
+    env_file:
+      - db.env
+      - nextcloud.env
+      - backup.env
+    volumes:
+      - ${DOCKER_DATA}/nextcloud/nextcloud:/to-backup/nextcloud/var/www/html
+      - ${DOCKER_DATA}/nextcloud/apps:/to-backup/nextcloud/var/www/html/apps
+      - ${DOCKER_DATA}/nextcloud/config:/to-backup/nextcloud/var/www/config
+      - ${DOCKER_DATA}/nextcloud/redis:/to-backup/nextcloud/redis
+      - /home/andy/docker/backup/nc/:/backups
+      - ./encryption.key:/var/encryption.key
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: |
+      bash -c 'bash -s <<EOF
+      trap "break;exit" SIGHUP SIGINT SIGTERM
+      sleep 15s
+      while /bin/true; do
+        ruby /app/main.rb
+        echo "going to sleep for $$BACKUP_FREQUENCY"
+        sleep $$BACKUP_FREQUENCY
+      done
+      EOF'
+    networks:
+      - nextcloud-internal

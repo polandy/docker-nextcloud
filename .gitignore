@@ -1,0 +1,8 @@
+backup.env
+db.env
+*-bu
+document-default.json
+encryption.key
+nextcloud.env
+rufus-quickstart.rb
+documentserver-default.json
